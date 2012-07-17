@@ -91,7 +91,7 @@ uint32_t cycleCount = 0;
 uint16_t samplesDuringThisMainsCycle = 0;
 uint8_t nextStateOfTriac = OFF;
 
-uint32_t noOfSamplePairs = 0;
+//uint32_t noOfSamplePairs = 0;
 uint8_t polarityNow = NEGATIVE; // probably not important, but better than being indeterminate
 
 boolean triggerNeedsToBeArmed = false;
@@ -130,9 +130,10 @@ double sumP;                  //  cumulative sum of power calculations within th
 #ifdef DEBUG 
 char buffer[8];
 uint16_t received;
+#endif
+
 uint8_t dutyCycle;
 volatile uint8_t safe_dutyCycle;
-#endif
 
 unsigned long interrupt_timing=0;
 
@@ -144,18 +145,18 @@ void setup()
   pinModeFast(outputPinForTrigger, OUTPUT);  
   pinModeFast(outputPinForLed, OUTPUT);  
 
+  pinMode(6, OUTPUT);    //Nanode LED
+  digitalWrite(6, HIGH);  //LED OFF
+
+  Timer1.initialize(1000000/50/50);         // initialize timer1, call 50 times per second
+  Timer1.attachInterrupt(callback);  // attaches callback() as a timer overflow interrupt
+
   //STUART ADDED.... EXPERIMENAL FASTER ANALOGUE READ ON ARDUINO
   //NEEDS TO BE TESTED COMMENT OUT FOR NORMAL OPERATION! 
   //set prescale to 16 as per forum on http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1208715493/11
   sbi(ADCSRA,ADPS2);
   cbi(ADCSRA,ADPS1);
   cbi(ADCSRA,ADPS0);
-
-  pinMode(6, OUTPUT);    //Nanode LED
-  digitalWrite(6, HIGH);
-
-  Timer1.initialize(1000000/50/50);         // initialize timer1, call 50 times per second
-  Timer1.attachInterrupt(callback);  // attaches callback() as a timer overflow interrupt
 
 
 #ifdef DEBUG 
@@ -164,9 +165,9 @@ void setup()
   buffer[received] = '\0';
 
   // to convert the product of simulated V & I samples into Joules                 
-#define POWERCAL 1.0F  
+#define POWERCAL 1.0  
   // to convert raw voltage samples into volts.   
-#define VOLTAGECAL 1.0F
+#define VOLTAGECAL 1.0
   // These cal values are unity because the simulation is scaled for volts and amps
 
   /*  populate the voltage sample array for DEBUG use
@@ -199,7 +200,7 @@ void setup()
   // import and export flows are balanced.  
 
   // Volts per ADC-unit. (1.44)
-#define VOLTAGECAL 679F/471F 
+#define VOLTAGECAL 679.0/471.0 
   // This value is used to determine when the voltage level is suitable for 
   // arming the external trigger device.  To set this value, note the min and max
   // numbers that are seen when measuring 240Vac via the voltage sensor, which 
@@ -217,21 +218,23 @@ void loop() // each loop is for one pair of V & I measurements
 { 
   loopcount++;
   float percent=(float)safe_dutyCycle/100.0F;
-  
+
   //DIM the led based on the duty cycle / power output of the triac
   analogWrite(6,255-( 255 * percent));  
 
   Serial.print(F("Triac duty cycle="));
   Serial.print(safe_dutyCycle);
   Serial.print("% (");
+#ifdef DEBUG 
   Serial.print( powerRatingOfImmersion_4debug * percent);
+#endif
   Serial.print(")");
 
 
   //This is a timing of the interrupt routine in microseconds
   Serial.print("  int time=");
   Serial.print(interrupt_timing);
-  
+
   Serial.println();
 
 
@@ -371,15 +374,15 @@ float getNextVoltageSample()
 void callback()
 {
   unsigned long time = micros();
-  
-  //Flash the LED on the interrupt call
-  //digitalWrite(6, digitalRead(6) ^ 1);
 
-  noOfSamplePairs++;              // for stats only
+  //Toggle a pin - can be used to monitor interrupt calls on a o'scope
+  //digitalWriteFast(9, digitalReadFast(9) ^ 1);
+
+  //noOfSamplePairs++;              // for stats only
   samplesDuringThisMainsCycle++;  // for power calculation at the start of each mains cycle
 
   lastSampleV=sampleV;            // save previous voltage values for digital high-pass filter
-  lastFilteredV = filteredV;      
+  lastFilteredV=filteredV;      
 
   //-----------------------------------------------------------------------------
   // A1) Read in the raw voltage sample (this is a synthesised value when in DEBUG mode)
@@ -387,13 +390,12 @@ void callback()
 #ifdef DEBUG
   sampleV = getNextVoltageSample(); // synthesised value
 #else    
-  sampleV = analogRead(voltageSensorPin);                 //Read in raw voltage signal
-
   //-----------------------------------------------------------------------------
   // A2) For normal operation, the raw current sample must be taken immediately after
   //     the voltage sample.  But when running in DEBUG mode, all processing of the 
   //     current sample is deferred.
   //-----------------------------------------------------------------------------
+  sampleV = analogRead(voltageSensorPin);                 //Read in raw voltage signal
   sampleI = analogRead(currentSensorPin);                 //Read in raw current signal
 #endif
 
@@ -409,11 +411,9 @@ void callback()
   //-----------------------------------------------------------------------------
   filteredV = 0.996*(lastFilteredV+sampleV-lastSampleV);
 
-
   // Establish the polarities of the latest and previous filtered voltage samples
   uint8_t polarityOfLastReading = polarityNow;
   polarityNow=(filteredV >= 0) ? POSITIVE:NEGATIVE;
-
 
 #ifdef DEBUG
   // In normal operation, this algorith will be driving a triac via a trigger device that
@@ -514,7 +514,6 @@ void callback()
         // and clear the flag.
         triggerNeedsToBeArmed = false;
 
-#ifdef DEBUG
         if (!nextStateOfTriac) dutyCycle++;
 
         //Every 100 cycles output the proportion of time the triac was on vs off
@@ -523,7 +522,6 @@ void callback()
           safe_dutyCycle=dutyCycle;
           dutyCycle=0;
         }
-#endif
 
       }
     }    
@@ -573,8 +571,10 @@ void callback()
   cumVdeltasThisCycle += (sampleV - DCoffset); // for use with LP filter
 
 
+  //Time how long this code takes to run
   interrupt_timing=micros()-time;
 }
+
 
 
 

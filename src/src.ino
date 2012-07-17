@@ -113,7 +113,7 @@ float sampleI;   //   raw current sample
 // some additional components for use in DEBUG mode
 #define noOfVoltageSamplesPerCycle_4debug 45
 float voltageSamples_4debug[noOfVoltageSamplesPerCycle_4debug];
-float surplusPV_4debug = 500; // <<<---------------------- PV power in Watts
+float surplusPV_4debug = 2500; // <<<---------------------- PV power in Watts
 uint8_t vsIndex_4debug = 0;
 uint8_t triacState_4debug = OFF;
 uint16_t powerRatingOfImmersion_4debug = 3000; 
@@ -129,6 +129,11 @@ double DCoffset;              // <<--- for LPF
 double cumVdeltasThisCycle;   // <<--- for LPF 
 double sumP;                  //  cumulative sum of power calculations within this mains cycles
 
+#ifdef DEBUG 
+char buffer[8];
+uint16_t received;
+uint16_t dutyCycle;
+#endif
 
 void setup()
 {  
@@ -146,10 +151,10 @@ void setup()
   cbi(ADCSRA,ADPS0);
 
 
-
-
 #ifdef DEBUG 
   Serial.println(F("In DEBUG mode ...\n")); 
+  received = 0;
+  buffer[received] = '\0';
 
   // to convert the product of simulated V & I samples into Joules                 
 #define POWERCAL 1.0F  
@@ -199,8 +204,11 @@ void setup()
 }
 
 
+
 void loop() // each loop is for one pair of V & I measurements
 {
+
+
   noOfSamplePairs++;              // for stats only
   samplesDuringThisMainsCycle++;  // for power calculation at the start of each mains cycle
 
@@ -371,9 +379,9 @@ void loop() // each loop is for one pair of V & I measurements
         // first check the level in the energy bucket to determine whether the 
         // triac should be fired or not at the next opportunity
         //
-        
+
         nextStateOfTriac=(energyInBucket > (capacityOfEnergyBucket / 2)) ? ON:OFF;
-       
+
         // then set the Arduino's output pin accordingly, 
         digitalWriteFast(outputPinForTrigger, nextStateOfTriac);   
         digitalWriteFast(outputPinForLed, !nextStateOfTriac);  // active high
@@ -382,22 +390,38 @@ void loop() // each loop is for one pair of V & I measurements
         triggerNeedsToBeArmed = false;
 
 #ifdef DEBUG
-        // Display relevant values when the trigger device is being armed
-        // start to display this data 5 cycles before the bucket gets to half-full 
-        // (May not be exactly 5 if the high-pass filters have not fully settled)
-        if (cycleCount > 
-          (100 + (1800/((surplusPV_4debug - safetyMargin_watts)/cyclesPerSecond)) - 5))
-        {
-          //Serial.print(F("cycle No. "));
-          //Serial.print(cycleCount);
-          //Serial.print(F(", samp'V "));
-          //Serial.print(sampleV);
-          //Serial.print(F(", energyInBucket "));
-          //Serial.print(energyInBucket);
-          //Serial.print(F(", triggerState "));
-          Serial.print(!nextStateOfTriac);
+        if (!nextStateOfTriac) dutyCycle++;
+
+        //Every 100 cycles output the proportion of time the triac was on vs off
+        if (cycleCount % 100==0) {
+          Serial.print(F("\nTriac duty cycle="));
+          Serial.print(dutyCycle);
+          Serial.print("% (");
+          Serial.print(  * ((float)dutyCycle/100));
+          Serial.println(")");
+          dutyCycle=0;
         }
 #endif
+
+        /*
+#ifdef DEBUG
+         // Display relevant values when the trigger device is being armed
+         // start to display this data 5 cycles before the bucket gets to half-full 
+         // (May not be exactly 5 if the high-pass filters have not fully settled)
+         if (cycleCount > 
+         (100 + (1800/((surplusPV_4debug - safetyMargin_watts)/cyclesPerSecond)) - 5))
+         {
+         //Serial.print(F("cycle No. "));
+         //Serial.print(cycleCount);
+         //Serial.print(F(", samp'V "));
+         //Serial.print(sampleV);
+         //Serial.print(F(", energyInBucket "));
+         //Serial.print(energyInBucket);
+         //Serial.print(F(", triggerState "));
+         Serial.print(!nextStateOfTriac);
+         }
+         #endif
+         */
 
       }
     }    
@@ -446,27 +470,55 @@ void loop() // each loop is for one pair of V & I measurements
 
   cumVdeltasThisCycle += (sampleV - DCoffset); // for use with LP filter
 
-
+  /*
   // can watch power contributions accumulating here, prior to being added to the energy bucket
-  //        if ((beyondStartUpPhase == true) 
-  if (((cycleCount % 50) == 1) && (samplesDuringThisMainsCycle == 42)) // i.e. the 42nd sample of 
-    // every 50th cycle
+   //        if ((beyondStartUpPhase == true) 
+   if (((cycleCount % 50) == 1) && (samplesDuringThisMainsCycle == 42)) // i.e. the 42nd sample of 
+   // every 50th cycle
+   {
+   Serial.print(F("\n # "));
+   Serial.print(cycleCount);
+   Serial.print(F(", sam'V "));
+   Serial.print(sampleV);
+   Serial.print(F(", sam'I "));
+   Serial.print(sampleI);
+   Serial.print(F(", DCoffset "));
+   Serial.print(DCoffset);
+   Serial.print(F(", instP "));
+   Serial.print(instP);
+   Serial.print(F(", sumP "));
+   Serial.print(sumP);
+   Serial.print(F(", bkt'En "));
+   Serial.println(energyInBucket);
+   }
+   */
+
+#ifdef DEBUG
+  //Debug and allow the surplusPV_4debug value to be changed during runtime...
+  //Set ARDUINO serial console to SEND NEWLINE (drop down list in bottom right of serial console window)
+  if (Serial.available())
   {
-    Serial.print(F("cyc "));
-    Serial.print(cycleCount);
-    Serial.print(F(", sam'V "));
-    Serial.print(sampleV);
-    Serial.print(F(", sam'I "));
-    Serial.print(sampleI);
-    Serial.print(F(", DCoffset "));
-    Serial.print(DCoffset);
-    Serial.print(F(", instP "));
-    Serial.print(instP);
-    Serial.print(F(", sumP "));
-    Serial.print(sumP);
-    Serial.print(F(", bkt'En "));
-    Serial.println(energyInBucket);
-  }
+    byte c=Serial.read();
+    buffer[received++] = c;
+    buffer[received] = '\0';
+
+    if (received >= (sizeof(buffer)-1)) {
+      //Reset buffer if length is exceeded
+      received = 0;
+      buffer[received] = '\0';
+    }
+    if (c==10)
+    {
+      surplusPV_4debug = atoi(buffer);
+      received = 0;
+      buffer[received] = '\0';
+
+      Serial.print(F("\n\nChanging surplusPV="));
+      Serial.println(surplusPV_4debug);
+    }
+  }  
+#endif
+
 
 
 } // end of loop()
@@ -509,6 +561,9 @@ void pause()
   }    
 }
 #endif
+
+
+
 
 
 

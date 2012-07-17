@@ -58,6 +58,8 @@
 //Added in digitalWriteFast from http://code.google.com/p/digitalwritefast
 #include "digitalWriteFast.h"
 
+#include "TimerOne.h"
+
 // define the input and output pins
 #define outputPinForLed       13
 #define outputPinForTrigger   9
@@ -75,8 +77,6 @@
 // 0.001 kWh = 3600 Joules
 #define capacityOfEnergyBucket 3600
 
-
-
 // defines for setting and clearing register bits
 #ifndef cbi
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
@@ -84,8 +84,6 @@
 #ifndef sbi
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 #endif
-
-
 
 
 float safetyMargin_watts = 0;  // <<<-------  Safety Margin in Watts (increase for more export)
@@ -113,7 +111,7 @@ float sampleI;   //   raw current sample
 // some additional components for use in DEBUG mode
 #define noOfVoltageSamplesPerCycle_4debug 45
 float voltageSamples_4debug[noOfVoltageSamplesPerCycle_4debug];
-float surplusPV_4debug = 2500; // <<<---------------------- PV power in Watts
+float surplusPV_4debug = 250; // <<<---------------------- PV power in Watts
 uint8_t vsIndex_4debug = 0;
 uint8_t triacState_4debug = OFF;
 uint16_t powerRatingOfImmersion_4debug = 3000; 
@@ -132,8 +130,12 @@ double sumP;                  //  cumulative sum of power calculations within th
 #ifdef DEBUG 
 char buffer[8];
 uint16_t received;
-uint16_t dutyCycle;
+uint8_t dutyCycle;
+volatile uint8_t safe_dutyCycle;
 #endif
+
+unsigned long interrupt_timing=0;
+
 
 void setup()
 {  
@@ -142,13 +144,18 @@ void setup()
   pinModeFast(outputPinForTrigger, OUTPUT);  
   pinModeFast(outputPinForLed, OUTPUT);  
 
-
   //STUART ADDED.... EXPERIMENAL FASTER ANALOGUE READ ON ARDUINO
   //NEEDS TO BE TESTED COMMENT OUT FOR NORMAL OPERATION! 
   //set prescale to 16 as per forum on http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1208715493/11
   sbi(ADCSRA,ADPS2);
   cbi(ADCSRA,ADPS1);
   cbi(ADCSRA,ADPS0);
+
+  pinMode(6, OUTPUT);    //Nanode LED
+  digitalWrite(6, HIGH);
+
+  Timer1.initialize(1000000/50/50);         // initialize timer1, call 50 times per second
+  Timer1.attachInterrupt(callback);  // attaches callback() as a timer overflow interrupt
 
 
 #ifdef DEBUG 
@@ -204,10 +211,169 @@ void setup()
 }
 
 
+int loopcount=0;
 
 void loop() // each loop is for one pair of V & I measurements
-{
+{ 
+  loopcount++;
+  float percent=(float)safe_dutyCycle/100.0F;
+  
+  //DIM the led based on the duty cycle / power output of the triac
+  analogWrite(6,255-( 255 * percent));  
 
+  Serial.print(F("Triac duty cycle="));
+  Serial.print(safe_dutyCycle);
+  Serial.print("% (");
+  Serial.print( powerRatingOfImmersion_4debug * percent);
+  Serial.print(")");
+
+
+  //This is a timing of the interrupt routine in microseconds
+  Serial.print("  int time=");
+  Serial.print(interrupt_timing);
+  
+  Serial.println();
+
+
+  /*--------------------------------
+   * WARNING!
+   * Before normal operation commences, all Serial statements 
+   * should be removed because they are likely to interfere with time-critical code.
+   *--------------------------------         
+   */
+  if((loopcount % 10) == 0) // display useful data every 10 seconds
+  {
+    Serial.print(F("\n # "));
+    Serial.print(cycleCount);
+    Serial.print(F(", sampleV "));
+    Serial.print(sampleV,4);
+    Serial.print(F(", fltdV "));
+    Serial.print(filteredV,4);
+    Serial.print(F(", sampleV-dc "));
+    Serial.print((int)(sampleV - DCoffset));
+    Serial.print(F(", cumVdeltas "));
+    Serial.print(cumVdeltasThisCycle,4);
+    Serial.print(F(", prevDCoffset "));
+    Serial.print(prevDCoffset,4);
+    Serial.print(F(", refFltdV "));
+    Serial.print(DCoffset,4);
+    Serial.print(F(", enInBkt "));
+    Serial.println(energyInBucket,4);
+  }    
+
+  /*
+      if((cycleCount % 50) == 5) // display bucket energy every second
+   // useful for calibration trials
+   {
+   Serial.print(F("energy in bucket = "));
+   Serial.println(energyInBucket); 
+   }
+   */
+
+
+
+  /*
+#ifdef DEBUG
+   // Display relevant values when the trigger device is being armed
+   // start to display this data 5 cycles before the bucket gets to half-full 
+   // (May not be exactly 5 if the high-pass filters have not fully settled)
+   if (cycleCount > 
+   (100 + (1800/((surplusPV_4debug - safetyMargin_watts)/cyclesPerSecond)) - 5))
+   {
+   //Serial.print(F("cycle No. "));
+   //Serial.print(cycleCount);
+   //Serial.print(F(", samp'V "));
+   //Serial.print(sampleV);
+   //Serial.print(F(", energyInBucket "));
+   //Serial.print(energyInBucket);
+   //Serial.print(F(", triggerState "));
+   Serial.print(!nextStateOfTriac);
+   }
+   #endif
+   */
+
+
+  /*
+  // can watch power contributions accumulating here, prior to being added to the energy bucket
+   //        if ((beyondStartUpPhase == true) 
+   if (((cycleCount % 50) == 1) && (samplesDuringThisMainsCycle == 42)) // i.e. the 42nd sample of 
+   // every 50th cycle
+   {
+   Serial.print(F("\n # "));
+   Serial.print(cycleCount);
+   Serial.print(F(", sam'V "));
+   Serial.print(sampleV);
+   Serial.print(F(", sam'I "));
+   Serial.print(sampleI);
+   Serial.print(F(", DCoffset "));
+   Serial.print(DCoffset);
+   Serial.print(F(", instP "));
+   Serial.print(instP);
+   Serial.print(F(", sumP "));
+   Serial.print(sumP);
+   Serial.print(F(", bkt'En "));
+   Serial.println(energyInBucket);
+   }
+   */
+
+#ifdef DEBUG
+  //Debug and allow the surplusPV_4debug value to be changed during runtime...
+  //Set ARDUINO serial console to SEND NEWLINE (drop down list in bottom right of serial console window)
+  if (Serial.available())
+  {
+    byte c=Serial.read();
+    buffer[received++] = c;
+    buffer[received] = '\0';
+
+    if (received >= (sizeof(buffer)-1)) {
+      //Reset buffer if length is exceeded
+      received = 0;
+      buffer[received] = '\0';
+    }
+    if (c==10)
+    {
+      surplusPV_4debug = atoi(buffer);
+      received = 0;
+      buffer[received] = '\0';
+
+      Serial.print(F("\n\nChanging surplusPV="));
+      Serial.println(surplusPV_4debug);
+    }
+  }  
+#endif
+
+  delay(500);  //small delay
+
+} // end of loop()
+
+
+#ifdef DEBUG
+// function to synthesive voltage samples for DEBUG mode only
+float getNextVoltageSample()
+{
+  float voltageSample;
+
+  voltageSample = voltageSamples_4debug[vsIndex_4debug];
+  voltageSample+= 500.0; // not critical, approx mid-way in the ADC's input range.
+
+  vsIndex_4debug++;  
+  if (vsIndex_4debug >= noOfVoltageSamplesPerCycle_4debug) 
+  {
+    vsIndex_4debug = 0;
+  }
+
+  return voltageSample;
+}
+#endif
+
+
+
+void callback()
+{
+  unsigned long time = micros();
+  
+  //Flash the LED on the interrupt call
+  //digitalWrite(6, digitalRead(6) ^ 1);
 
   noOfSamplePairs++;              // for stats only
   samplesDuringThisMainsCycle++;  // for power calculation at the start of each mains cycle
@@ -222,7 +388,6 @@ void loop() // each loop is for one pair of V & I measurements
   sampleV = getNextVoltageSample(); // synthesised value
 #else    
   sampleV = analogRead(voltageSensorPin);                 //Read in raw voltage signal
-
 
   //-----------------------------------------------------------------------------
   // A2) For normal operation, the raw current sample must be taken immediately after
@@ -247,10 +412,8 @@ void loop() // each loop is for one pair of V & I measurements
 
   // Establish the polarities of the latest and previous filtered voltage samples
   uint8_t polarityOfLastReading = polarityNow;
-  if(filteredV >= 0) 
-    polarityNow = POSITIVE; 
-  else 
-    polarityNow = NEGATIVE;
+  polarityNow=(filteredV >= 0) ? POSITIVE:NEGATIVE;
+
 
 #ifdef DEBUG
   // In normal operation, this algorith will be driving a triac via a trigger device that
@@ -288,43 +451,6 @@ void loop() // each loop is for one pair of V & I measurements
       double realPower = POWERCAL * sumP / (float)samplesDuringThisMainsCycle;
       float realEnergy = realPower / cyclesPerSecond;
 
-
-      /*--------------------------------
-       * WARNING!
-       * Before normal operation commences, all Serial statements 
-       * should be removed because they are likely to interfere with time-critical code.
-       *--------------------------------         
-       */
-      if((cycleCount % 500) == 5) // display useful data every 10 seconds
-      {
-        Serial.print(F("\n # "));
-        Serial.print(cycleCount);
-        Serial.print(F(", sampleV "));
-        Serial.print(sampleV,4);
-        Serial.print(F(", fltdV "));
-        Serial.print(filteredV,4);
-        Serial.print(F(", sampleV-dc "));
-        Serial.print((int)(sampleV - DCoffset));
-        Serial.print(F(", cumVdeltas "));
-        Serial.print(cumVdeltasThisCycle,4);
-        Serial.print(F(", prevDCoffset "));
-        Serial.print(prevDCoffset,4);
-        Serial.print(F(", refFltdV "));
-        Serial.print(DCoffset,4);
-        Serial.print(F(", enInBkt "));
-        Serial.println(energyInBucket,4);
-        //    pause();
-      }    
-
-      /*
-      if((cycleCount % 50) == 5) // display bucket energy every second
-       // useful for calibration trials
-       {
-       Serial.print(F("energy in bucket = "));
-       Serial.println(energyInBucket); 
-       }
-       */
-
       if (beyondStartUpPhase == true)
       {  
         // Providing that the DC-blocking filters have had sufficient time to settle,    
@@ -334,7 +460,6 @@ void loop() // each loop is for one pair of V & I measurements
         // Reduce the level in the energy bucket by the specified safety margin.
         // This allows the system to be positively biassed towards export rather than import
         energyInBucket -= safetyMargin_watts / cyclesPerSecond; 
-
 
         // Apply max and min limits to bucket's level
         if (energyInBucket > capacityOfEnergyBucket)
@@ -393,35 +518,12 @@ void loop() // each loop is for one pair of V & I measurements
         if (!nextStateOfTriac) dutyCycle++;
 
         //Every 100 cycles output the proportion of time the triac was on vs off
+        //copy to a variable which can be used outside this routine
         if (cycleCount % 100==0) {
-          Serial.print(F("\nTriac duty cycle="));
-          Serial.print(dutyCycle);
-          Serial.print("% (");
-          Serial.print(  * ((float)dutyCycle/100));
-          Serial.println(")");
+          safe_dutyCycle=dutyCycle;
           dutyCycle=0;
         }
 #endif
-
-        /*
-#ifdef DEBUG
-         // Display relevant values when the trigger device is being armed
-         // start to display this data 5 cycles before the bucket gets to half-full 
-         // (May not be exactly 5 if the high-pass filters have not fully settled)
-         if (cycleCount > 
-         (100 + (1800/((surplusPV_4debug - safetyMargin_watts)/cyclesPerSecond)) - 5))
-         {
-         //Serial.print(F("cycle No. "));
-         //Serial.print(cycleCount);
-         //Serial.print(F(", samp'V "));
-         //Serial.print(sampleV);
-         //Serial.print(F(", energyInBucket "));
-         //Serial.print(energyInBucket);
-         //Serial.print(F(", triggerState "));
-         Serial.print(!nextStateOfTriac);
-         }
-         #endif
-         */
 
       }
     }    
@@ -470,99 +572,9 @@ void loop() // each loop is for one pair of V & I measurements
 
   cumVdeltasThisCycle += (sampleV - DCoffset); // for use with LP filter
 
-  /*
-  // can watch power contributions accumulating here, prior to being added to the energy bucket
-   //        if ((beyondStartUpPhase == true) 
-   if (((cycleCount % 50) == 1) && (samplesDuringThisMainsCycle == 42)) // i.e. the 42nd sample of 
-   // every 50th cycle
-   {
-   Serial.print(F("\n # "));
-   Serial.print(cycleCount);
-   Serial.print(F(", sam'V "));
-   Serial.print(sampleV);
-   Serial.print(F(", sam'I "));
-   Serial.print(sampleI);
-   Serial.print(F(", DCoffset "));
-   Serial.print(DCoffset);
-   Serial.print(F(", instP "));
-   Serial.print(instP);
-   Serial.print(F(", sumP "));
-   Serial.print(sumP);
-   Serial.print(F(", bkt'En "));
-   Serial.println(energyInBucket);
-   }
-   */
 
-#ifdef DEBUG
-  //Debug and allow the surplusPV_4debug value to be changed during runtime...
-  //Set ARDUINO serial console to SEND NEWLINE (drop down list in bottom right of serial console window)
-  if (Serial.available())
-  {
-    byte c=Serial.read();
-    buffer[received++] = c;
-    buffer[received] = '\0';
-
-    if (received >= (sizeof(buffer)-1)) {
-      //Reset buffer if length is exceeded
-      received = 0;
-      buffer[received] = '\0';
-    }
-    if (c==10)
-    {
-      surplusPV_4debug = atoi(buffer);
-      received = 0;
-      buffer[received] = '\0';
-
-      Serial.print(F("\n\nChanging surplusPV="));
-      Serial.println(surplusPV_4debug);
-    }
-  }  
-#endif
-
-
-
-} // end of loop()
-
-
-#ifdef DEBUG
-// function to synthesive voltage samples for DEBUG mode only
-float getNextVoltageSample()
-{
-  float voltageSample;
-
-  voltageSample = voltageSamples_4debug[vsIndex_4debug];
-  voltageSample+= 500.0; // not critical, approx mid-way in the ADC's input range.
-
-  vsIndex_4debug++;  
-  if (vsIndex_4debug >= noOfVoltageSamplesPerCycle_4debug) 
-  {
-    vsIndex_4debug = 0;
-  }
-
-  return voltageSample;
+  interrupt_timing=micros()-time;
 }
-#endif
-
-/* A function which causes the code to pause until any key, followed by [C/R], is pressed.  
- */
-#ifdef DEBUG
-void pause()
-{
-  uint8_t done = false;
-  uint8_t dummyByte;
-
-  while (done != true)
-  {
-    if (Serial.available() > 0)
-    {
-      dummyByte = Serial.read(); // to 'consume' the incoming byte
-      done++;
-    }
-  }    
-}
-#endif
-
-
 
 
 

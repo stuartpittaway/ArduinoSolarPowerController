@@ -45,10 +45,15 @@
 
 /*
   Modified by Stuart Pittaway, 17 July 2012
- Original version compiles to 6858 bytes with debugging on, new version is XXXX
+ Original version compiles to 6858 bytes with debugging on, new version is 6984, but reduced RAM footprint.
  changed data types to be ANSI C/portable, included digitalwritefast library.
  Changed various variables into hardcoded define statements to save program space
  */
+
+// for normal operation, the next line should be commented out
+#define DEBUG
+
+
 
 //Added in digitalWriteFast from http://code.google.com/p/digitalwritefast
 #include "digitalWriteFast.h"
@@ -70,8 +75,18 @@
 // 0.001 kWh = 3600 Joules
 #define capacityOfEnergyBucket 3600
 
-// for normal operation, the next line should be commented out
-#define DEBUG
+
+
+// defines for setting and clearing register bits
+#ifndef cbi
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#endif
+#ifndef sbi
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+#endif
+
+
+
 
 float safetyMargin_watts = 0;  // <<<-------  Safety Margin in Watts (increase for more export)
 uint32_t cycleCount = 0;
@@ -95,37 +110,24 @@ float sampleV;   // raw Voltage sample,
 float lastSampleV;   // saved value from previous loop (HP filter is for voltage samples only)
 float sampleI;   //   raw current sample                   
 
+// some additional components for use in DEBUG mode
+#define noOfVoltageSamplesPerCycle_4debug 45
+float voltageSamples_4debug[noOfVoltageSamplesPerCycle_4debug];
+float surplusPV_4debug = 500; // <<<---------------------- PV power in Watts
+uint8_t vsIndex_4debug = 0;
+uint8_t triacState_4debug = OFF;
+uint16_t powerRatingOfImmersion_4debug = 3000; 
+
 #else
 int16_t sampleV,sampleI;   // voltage & current samples are integers in the ADC's input range 0 - 1023 
 int16_t lastSampleV;     // stored value from the previous loop (HP filter is for voltage samples only)         
 #endif
 
-double lastFilteredV,filteredV;  //  voltage values after filtering to remove the DC offset,
-//   and the stored values from the previous loop             
+double lastFilteredV,filteredV;  //  voltage values after filtering to remove the DC offset, and the stored values from the previous loop             
 double prevDCoffset;          // <<--- for LPF to quantify the DC offset
 double DCoffset;              // <<--- for LPF 
 double cumVdeltasThisCycle;   // <<--- for LPF 
-double sumP;   //  cumulative sum of power calculations within this mains cycles
-
-
-#ifdef DEBUG
-// some additional components for use in DEBUG mode
-#define noOfVoltageSamplesPerCycle_4debug 45
-float voltageSamples_4debug[noOfVoltageSamplesPerCycle_4debug];
-float surplusPV_4debug = 2250; // <<<---------------------- PV power in Watts
-uint8_t vsIndex_4debug = 0;
-uint8_t triacState_4debug = OFF;
-uint16_t powerRatingOfImmersion_4debug = 3000; 
-#endif
-
-
-// defines for setting and clearing register bits
-#ifndef cbi
-#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
-#endif
-#ifndef sbi
-#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
-#endif
+double sumP;                  //  cumulative sum of power calculations within this mains cycles
 
 
 void setup()
@@ -136,12 +138,14 @@ void setup()
   pinModeFast(outputPinForLed, OUTPUT);  
 
 
-  //EXPERIMENAL FASTER ANALOGUE READ ON ARDUINO
+  //STUART ADDED.... EXPERIMENAL FASTER ANALOGUE READ ON ARDUINO
   //NEEDS TO BE TESTED COMMENT OUT FOR NORMAL OPERATION! 
   //set prescale to 16 as per forum on http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1208715493/11
   sbi(ADCSRA,ADPS2);
   cbi(ADCSRA,ADPS1);
   cbi(ADCSRA,ADPS0);
+
+
 
 
 #ifdef DEBUG 
@@ -285,7 +289,7 @@ void loop() // each loop is for one pair of V & I measurements
        */
       if((cycleCount % 500) == 5) // display useful data every 10 seconds
       {
-        Serial.print(F("\ncyc# "));
+        Serial.print(F("\n # "));
         Serial.print(cycleCount);
         Serial.print(F(", sampleV "));
         Serial.print(sampleV,4);
@@ -352,11 +356,7 @@ void loop() // each loop is for one pair of V & I measurements
       samplesDuringThisMainsCycle = 0;
       cumVdeltasThisCycle = 0;
 
-
-
-
     } // end of processing that is specific to the first +ve Vsample in each new cycle
-
 
     /* still processing POSITIVE Vsamples ...
      */
@@ -371,19 +371,12 @@ void loop() // each loop is for one pair of V & I measurements
         // first check the level in the energy bucket to determine whether the 
         // triac should be fired or not at the next opportunity
         //
-        if (energyInBucket > (capacityOfEnergyBucket / 2))        
-        {
-          nextStateOfTriac = ON;  // the external trigger device is active low
-          digitalWriteFast(outputPinForLed, 1);  // active high
-        } 
-        else
-        {
-          nextStateOfTriac = OFF; 
-          digitalWriteFast(outputPinForLed, 0);  
-        } 
-
+        
+        nextStateOfTriac=(energyInBucket > (capacityOfEnergyBucket / 2)) ? ON:OFF;
+       
         // then set the Arduino's output pin accordingly, 
         digitalWriteFast(outputPinForTrigger, nextStateOfTriac);   
+        digitalWriteFast(outputPinForLed, !nextStateOfTriac);  // active high
 
         // and clear the flag.
         triggerNeedsToBeArmed = false;
@@ -392,7 +385,6 @@ void loop() // each loop is for one pair of V & I measurements
         // Display relevant values when the trigger device is being armed
         // start to display this data 5 cycles before the bucket gets to half-full 
         // (May not be exactly 5 if the high-pass filters have not fully settled)
-        //
         if (cycleCount > 
           (100 + (1800/((surplusPV_4debug - safetyMargin_watts)/cyclesPerSecond)) - 5))
         {
@@ -403,9 +395,7 @@ void loop() // each loop is for one pair of V & I measurements
           //Serial.print(F(", energyInBucket "));
           //Serial.print(energyInBucket);
           //Serial.print(F(", triggerState "));
-          Serial.print(nextStateOfTriac);
-          //delay(100);
-          //pause();     
+          Serial.print(!nextStateOfTriac);
         }
 #endif
 
@@ -476,8 +466,6 @@ void loop() // each loop is for one pair of V & I measurements
     Serial.print(sumP);
     Serial.print(F(", bkt'En "));
     Serial.println(energyInBucket);
-    //delay(400);
-    //pause();     
   }
 
 

@@ -79,8 +79,8 @@
 
 //Calibrated by Stuart Aug 8th 2012, on breadboard circuit!
 #define VCAL 86.45
-#define ICAL 105.38
-#define PHASECAL 1.7
+#define ICAL 101.48
+#define PHASECAL 1.0
 
 /*
 These values work on emonTX
@@ -146,7 +146,7 @@ volatile uint8_t bouncecounter=0;
 boolean triggerNeedsToBeArmed = false;
 
 // the 'energy bucket' mimics the operation of a digital supply meter at the grid connection point.
-float energyInBucket = 0;                                                 
+volatile double energyInBucket = 0;                                                 
 
 // Local declarations of items to support code that I've lifted from calcVI(), in EmonLib. 
 
@@ -220,8 +220,11 @@ void loop() // each loop is for one pair of V & I measurements
         //Serial.print(", Vzc ");
         //Serial.print(voltageAtZeroCross);
         
-        Serial.print(",sampleV ");
+        Serial.print(",sampV ");
         Serial.print(sampleV);
+        Serial.print(",sampI ");
+        Serial.print(sampleI);
+        
         Serial.print(",fltdV ");
         Serial.print(filteredV);
         //Serial.print(", sampleV-dc ");
@@ -237,8 +240,8 @@ void loop() // each loop is for one pair of V & I measurements
         Serial.print(Vrms);
         Serial.print(",Irms ");
         Serial.print(Irms);
-        Serial.print(",realPwr ");
-        Serial.print(realPower);
+        //Serial.print(",realPwr ");
+        //Serial.print(realPower);
         Serial.print(",app.Pwr ");
         Serial.print(apparentPower);
         Serial.print(",pwrF ");
@@ -279,7 +282,7 @@ void loop() // each loop is for one pair of V & I measurements
   digitalWrite(outputPinForLed, HIGH);  // active high
   delay(5);  //small delay
   digitalWrite(outputPinForLed, LOW);  
-  delay(250);  //small delay
+  delay(750-5);  //small delay
 } // end of loop()
 
 /*
@@ -330,8 +333,6 @@ void positivezerocrossing()
   apparentPower = Vrms * Irms;
   powerFactor=realPower / apparentPower;
 
-
-
   /* update the Low Pass Filter for DC-offset removal */
   prevDCoffset = DCoffset;
   DCoffset = prevDCoffset + (0.01 * cumVdeltasThisCycle); 
@@ -339,13 +340,13 @@ void positivezerocrossing()
   //Calculate the real power of all instantaneous measurements taken during the 
   //previous mains cycle, and determine the gain (or loss) in energy.
   //realPower = POWERCAL * sumP / (float)samplesDuringThisMainsCycle;
-  float realEnergy = realPower / cyclesPerSecond;
+  double realEnergy = realPower / cyclesPerSecond;
 
   if (beyondStartUpPhase == true)
   {  
     // Providing that the DC-blocking filters have had sufficient time to settle,    
     // add this power contribution to the energy bucket
-    energyInBucket += realEnergy;   
+    energyInBucket += realEnergy;
 
     // Reduce the level in the energy bucket by the specified safety margin.
     // This allows the system to be positively biassed towards export rather than import
@@ -353,14 +354,15 @@ void positivezerocrossing()
 
     // Apply max and min limits to bucket's level
     if (energyInBucket > capacityOfEnergyBucket)
-      energyInBucket = capacityOfEnergyBucket;  
+      energyInBucket = capacityOfEnergyBucket;
+      
     if (energyInBucket < 0)
       energyInBucket = 0;  
   }
   else
   {  
-    // wait until the DC-blocking filters have had time to settle, 5 seconds...
-    if(cycleCount > 500)
+    // wait until the DC-blocking filters have had time to settle for a few seconds...
+    if(cycleCount > 200)
       beyondStartUpPhase = true;
   }
 
@@ -369,27 +371,25 @@ void positivezerocrossing()
   if (energyInBucket > (capacityOfEnergyBucket / 2))        
   {
     //nextStateOfTriac = ON;  // the external trigger device is active low
-    digitalWriteFast(outputPinForTrigger, ON);
+    digitalWriteFast(outputPinForTrigger, HIGH);
   } 
   else
   {
     //nextStateOfTriac = OFF; 
-    digitalWriteFast(outputPinForTrigger, OFF);
+    digitalWriteFast(outputPinForTrigger, LOW);
   } 
-
-
 
 
   // clear the per-cycle accumulators for use in this new mains cycle.
   sumV = 0;
   sumI = 0;
   sumP = 0;
-  samplesDuringThisMainsCycle = 0;
   cumVdeltasThisCycle = 0;
+  samplesDuringThisMainsCycle = 0;
 
   // attaches callback() as a timer overflow interrupt, called every 200microseconds
   //delay: 200=100 samples per wave, 150=133 samples, 
-  Timer1.attachInterrupt(db,250);  
+  Timer1.attachInterrupt(db,230);  
 
   digitalWriteFast(10, LOW);
   //digitalWriteFast(9, HIGH);
@@ -407,8 +407,8 @@ void db() {
   static int16_t lastSampleV=sampleV;            // save previous voltage values for digital high-pass filter
   static double lastFilteredV = filteredV;  
   
-  sampleV = analogRead(voltageSensorPin);                 //Read in raw voltage signal
   sampleI = analogRead(currentSensorPin);                 //Read in raw current signal
+  sampleV = analogRead(voltageSensorPin);                 //Read in raw voltage signal
 
   double sampleVminusDC = sampleV - DCoffset;
 

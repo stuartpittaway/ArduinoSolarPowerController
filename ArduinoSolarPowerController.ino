@@ -165,8 +165,12 @@ void setup()
 }
 
 
-void loop() // each loop is for one pair of V & I measurements
-{  
+void loop()
+{
+  
+  //Do what we want here, no time critical code to worry about
+  //the interrupts do all the hard work!
+  
   lcd.home ();
   lcd.clear ();
 
@@ -291,22 +295,6 @@ static long readVcc() {
   return result;
 }
 
-/*
-static unsigned long myMicros() {
- extern volatile unsigned long timer0_overflow_count;
- uint8_t oldSREG = SREG;
- cli();
- uint32_t t = TCNT0;
- if ((TIFR0 & _BV(TOV0)) && (t == 0))
- t = 256;
- uint32_t m = timer0_overflow_count;
- SREG = oldSREG;
- return ((m << 8) + t) * (64 / clockCyclesPerMicrosecond());
- }
- */
-
-
-
 static void positivezerocrossing()
 { 
   //This is the start of a new mains cycle just before going zero cross point.  Timing of this 
@@ -317,19 +305,17 @@ static void positivezerocrossing()
 
   //Start of the solar power divert code...
   waveformSampledCount++;
-  
-  
 
   //This code sorts out the solar power diversion to power the triac circuit
   divert_realPower = POWERCAL * singleCycleSumP / (float)samplesDuringThisMainsCycle;
   divert_realEnergy = realPower / cyclesPerSecond;
+  singleCycleSumP=0;
 
   if (beyondStartUpPhase == true)
   {  
     // Reduce the level in the energy bucket by the specified safety margin.
     // This allows the system to be positively biassed towards export or import
     divert_energyInBucket += divert_realEnergy-(safetyMargin_watts / cyclesPerSecond);   
-    //divert_energyInBucket -= safetyMargin_watts / cyclesPerSecond;       
   }
 
   // Apply max and min limits to bucket's level
@@ -339,7 +325,6 @@ static void positivezerocrossing()
   if (divert_energyInBucket < 0)
     divert_energyInBucket = 0;    
 
-  singleCycleSumP=0;
 
   if (divert_energyInBucket > (capacityOfEnergyBucket / 2))        
   {
@@ -357,9 +342,7 @@ static void positivezerocrossing()
 
     //Start the solar power divert after 5 samples (about 5 seconds)
     readingsTaken++;
-    if(readingsTaken == 10) beyondStartUpPhase = true;
-
-    
+    if(readingsTaken == 10) beyondStartUpPhase = true;    
 
     waveformSampledCount=0;
     //-------------------------------------------------------------------------------------------------------------------------

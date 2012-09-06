@@ -1,10 +1,22 @@
+
 /*
 ArduinoSolarPowerController.ino
  
  Based on eMonTX and Mk2_PV_Router_mini by Robin Emley (calypso_rae on Open Energy Monitor Forum July 2012) 
  
  PINS changed to run on Arduino UNI compat board (I'm using breadboard!)
- */
+
+I'm using a 16x2 LCD display with RGB lighting, model Winstar Display Co. WH1602B-CFH-JT
+
+Connecting PINS: 4=RS, A5=enable, d4=8, d5=7,d6=6, d7=5
+//LiquidCrystal(rs, enable, d4, d5, d6, d7) 
+//LiquidCrystal lcd(4, A5, 8,7,6,5);
+
+
+PINS FOR JEE BOARD RFM12B PINOUT
+       BOARD= 5v gnd sck sdo sdi sel irq 3v3
+ARDUINO PINS=n/a n/a d13 d12 d11 d10 d2  n/a
+*/
 
 /*
  Joules per ADC-unit squared.  Used for converting the product of voltage and current samples into Joules.
@@ -22,21 +34,39 @@ ArduinoSolarPowerController.ino
 // R1= 24,600 = - 19.1 gain
 #define OPAMPGAIN = -470000.0/24600.0
 
-
 #define VCAL 248.8F
 #define ICAL 7.366F
 #define PHASECAL 0.85F
 
+//#define enable_serial_debug
+
+// Frequency of RF12B module can be RF12_433MHZ, RF12_868MHZ or RF12_915MHZ. You should use the one matching the module you have.
+// 433MHZ, RF12_868MHZ or RF12_915MHZ. You should use the one matching the module you have.
+#define freq RF12_433MHZ                                                
+// emonTx RFM12B node ID
+const int nodeID = 10;                                                  
+// emonTx RFM12B wireless network group - needs to be same as emonBase and emonGLCD needs to be same as emonBase and emonGLCD
+const int networkGroup = 210;                                           
+
+// Download JeeLib: http://github.com/jcw/jeelib
+//#include <JeeLib.h>
+//#include <Ports.h>
+//#include <PortsBMP085.h>
+#include <PortsLCD.h>
+//#include <PortsSHT11.h>
+#include <RF12.h>
+//#include <RF12sio.h>
+
+//use code from jeelib instead... #include <LiquidCrystal.h>
+
 //Added in digitalWriteFast from http://code.google.com/p/digitalwritefast
+//digitalWriteFast might not need this
 #include "digitalWriteFast.h"
-
-#include <LiquidCrystal.h>
-
 #include "TimerOne.h"
 
 // define the input and output pins
-#define outputPinForLed       13
-#define outputPinForTrigger   4
+//#define outputPinForLed       13
+#define outputPinForTrigger   A6
 
 //eMonTX uses A2 and A3 for voltage and CT1 sockets
 #define voltageSensorPin      A2
@@ -50,7 +80,7 @@ ArduinoSolarPowerController.ino
 #define LED_OFF LOW
 
 #define   CONTRAST_PIN   9
-#define   CONTRAST       20
+#define   CONTRAST       1
 
 // use float to ensure accurate maths, mains frequency (Hz)
 #define cyclesPerSecond   50.0F 
@@ -61,7 +91,7 @@ ArduinoSolarPowerController.ino
 #define NUMBER_OF_SAMPLES_PER_FULLWAVE 50
 
 //Average the power readings over this number of AC samples (25=half second)
-#define NUMBER_OF_FULLWAVES_TO_SAMPLE 25
+#define NUMBER_OF_FULLWAVES_TO_SAMPLE 100
 
 //Time in microseconds between each interrupt
 #define INTERRUPTDELAY (1000000/cyclesPerSecond)/NUMBER_OF_SAMPLES_PER_FULLWAVE
@@ -77,6 +107,10 @@ ArduinoSolarPowerController.ino
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 #endif
 
+
+//LiquidCrystal(rs, enable, d4, d5, d6, d7) 
+//LiquidCrystal lcd(4, A5, 8,7,6,5);
+LiquidCrystal lcd(A4, A5, 8,7,6,5);
 
 static volatile int32_t SUPPLYVOLTAGE;
 static volatile int16_t lastSampleV,lastSampleI;
@@ -109,24 +143,26 @@ static volatile double divert_energyInBucket = 0;
 static uint8_t page=0;
 static uint8_t counter=8;
 
-//LiquidCrystal(rs, enable, d4, d5, d6, d7) 
-LiquidCrystal lcd(10, 11, 8,7,6,5);
-
 
 void setup()
 {  
+#ifdef enable_serial_debug
   Serial.begin(115200);  //Faster baud rate to reduce timing of serial.print commands
+#endif
 
   //Use PWM to control the LCD contrast
   pinModeFast(CONTRAST_PIN, OUTPUT);
   analogWrite(CONTRAST_PIN, CONTRAST);
 
   pinModeFast(outputPinForTrigger, OUTPUT);  
-  pinModeFast(outputPinForLed, OUTPUT);  
+  //pinModeFast(outputPinForLed, OUTPUT);  
 
   analogReference(DEFAULT);  //5v
 
   SUPPLYVOLTAGE = readVcc();
+
+  rf12_initialize(nodeID, freq, networkGroup);                          // initialize RF
+  rf12_sleep(RF12_SLEEP);
 
   lcd.begin(16,2);               // initialize the lcd 
 
@@ -165,9 +201,31 @@ void setup()
 }
 
 
-void loop()
+typedef struct { int power1, power2, power3, battery; } PayloadTX;      // create structure - a neat way of packaging data for RF comms
+PayloadTX emontx;  
+
+void send_rf_data()
 {
+
+
+  rf12_sleep(RF12_WAKEUP);
+  // if ready to send + exit loop if it gets stuck as it seems too
+  int i = 0; while (!rf12_canSend() && i<10) {rf12_recvDone(); i++;}
   
+  rf12_sendStart(0, &emontx, sizeof emontx);
+  // set the sync mode to 2 if the fuses are still the Arduino default
+  // mode 3 (full powerdown) can only be used with 258 CK startup fuses
+  
+  rf12_sendWait(2);
+  
+  rf12_sleep(RF12_SLEEP);
+}
+
+
+int transmitdelay=4;
+
+void loop()
+{  
   //Do what we want here, no time critical code to worry about
   //the interrupts do all the hard work!
   
@@ -200,6 +258,8 @@ void loop()
     counter=8;
   }
   if (page>1) page=0;
+
+#ifdef enable_serial_debug
 
   Serial.print(" cyc# ");
   Serial.print(waveformSampledCount);
@@ -247,6 +307,7 @@ void loop()
   Serial.print(",energy=");
   Serial.println(divert_realEnergy);
 
+
   //Serial.print(SUPPLYVOLTAGE);
 
   /*  
@@ -273,13 +334,21 @@ void loop()
    Serial.println();
    */
 
-  /*
-  digitalWriteFast(outputPinForLed, HIGH);  // active high
-   delay(15);  //small delay
-   digitalWriteFast(outputPinForLed, LOW);  
-   delay(1000-15);  //small delay
-   */
-  delay(500);
+#endif
+
+transmitdelay--;
+
+if (transmitdelay==0) {
+
+emontx.power1=apparentPower;
+emontx.power2=divert_realEnergy;
+emontx.power3=divert_energyInBucket;
+emontx.battery=0;
+
+  send_rf_data();                                                       // *SEND RF DATA* - see emontx_lib
+  transmitdelay=4;
+}
+  delay(1000);
 } // end of loop()
 
 
@@ -329,12 +398,12 @@ static void positivezerocrossing()
   if (divert_energyInBucket > (capacityOfEnergyBucket / 2))        
   {
     digitalWriteFast(outputPinForTrigger, TRIAC_ON);
-    digitalWriteFast(outputPinForLed, LED_ON);
+    //digitalWriteFast(outputPinForLed, LED_ON);
   } 
   else
   {
     digitalWriteFast(outputPinForTrigger, TRIAC_OFF);
-    digitalWriteFast(outputPinForLed, LED_OFF);
+    //digitalWriteFast(outputPinForLed, LED_OFF);
   } 
 
   //Back to the emonTx measurements
@@ -431,15 +500,4 @@ static void takesinglereading() {
   samplesDuringThisMainsCycle++;  // for power calculation of a single AC wave
   numberOfSamples++;  // for power calculation over a number of AC wave samples
 }
-
-
-
-
-
-
-
-
-
-
-
 

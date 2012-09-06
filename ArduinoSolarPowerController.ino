@@ -2,9 +2,11 @@
 /*
 ArduinoSolarPowerController.ino
  
- Based on eMonTX and Mk2_PV_Router_mini by Robin Emley (calypso_rae on Open Energy Monitor Forum July 2012) 
+Based on eMonTX and Mk2_PV_Router_mini by Robin Emley (calypso_rae on Open Energy Monitor Forum July 2012) 
+Additional inspiration taken from http://read.pudn.com/downloads108/sourcecode/embed/444108/IAR/AVR465.c__.htm
+
  
- PINS changed to run on Arduino UNI compat board (I'm using breadboard!)
+PINS changed to run on Arduino UNI compat board (I'm using breadboard!)
 
 I'm using a 16x2 LCD display with RGB lighting, model Winstar Display Co. WH1602B-CFH-JT
 
@@ -91,7 +93,7 @@ const int networkGroup = 210;
 #define NUMBER_OF_SAMPLES_PER_FULLWAVE 50
 
 //Average the power readings over this number of AC samples (25=half second)
-#define NUMBER_OF_FULLWAVES_TO_SAMPLE 100
+#define NUMBER_OF_FULLWAVES_TO_SAMPLE 50
 
 //Time in microseconds between each interrupt
 #define INTERRUPTDELAY (1000000/cyclesPerSecond)/NUMBER_OF_SAMPLES_PER_FULLWAVE
@@ -467,7 +469,8 @@ static void takesinglereading() {
   lastFilteredV = filteredV;  
   lastFilteredI = filteredI;  
 
-  sampleI = analogRead(currentSensorPin);
+  //As we are using an OpAmp the current reading is inverted - swap back.
+  sampleI = 0x03FF-analogRead(currentSensorPin);
   sampleV = analogRead(voltageSensorPin);
 
   //-----------------------------------------------------------------------------

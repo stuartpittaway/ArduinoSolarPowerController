@@ -77,8 +77,11 @@ const int networkGroup = 210;
 #include "TimerOne.h"
 
 // define the input and output pins
-//#define outputPinForLed       13
-#define outputPinForTrigger   A6
+#define GAINSTAGEPIN1         9
+#define GAINSTAGEPIN2         A0
+#define GAINSTAGEPIN3         A1
+
+#define outputPinForTrigger   4
 
 //eMonTX uses A2 and A3 for voltage and CT1 sockets
 #define voltageSensorPin      A2
@@ -91,8 +94,6 @@ const int networkGroup = 210;
 #define LED_ON HIGH
 #define LED_OFF LOW
 
-#define   CONTRAST_PIN   9
-#define   CONTRAST       1
 
 // use float to ensure accurate maths, mains frequency (Hz)
 #define cyclesPerSecond   50.0F 
@@ -121,7 +122,7 @@ const int networkGroup = 210;
 
 
 //LiquidCrystal(rs, enable, d4, d5, d6, d7) 
-//LiquidCrystal lcd(4, A5, 8,7,6,5);
+//LiquidCrystal lcd(A4, A5, 8,7,6,5);
 LiquidCrystal lcd(A4, A5, 8,7,6,5);
 
 static volatile int32_t SUPPLYVOLTAGE;
@@ -141,13 +142,15 @@ static volatile double realPower=0;
 
 //Just for statistics
 static volatile uint16_t samplesDuringThisMainsCycle = 0;
-static volatile uint16_t previousSamplesDuringThisMainsCycle=0;
+//static volatile uint16_t previousSamplesDuringThisMainsCycle=0;
 
 //Total number of samples taken over several AC wave forms
 static volatile uint16_t numberOfSamples=0;
 static volatile bool beyondStartUpPhase=false;
-static volatile unsigned long millisecondsPerZeroCross=0;
-static volatile unsigned long previousmillisecondsPerZeroCross=0;
+//static volatile unsigned long millisecondsPerZeroCross=0;
+//static volatile unsigned long previousmillisecondsPerZeroCross=0;
+
+static volatile unsigned long interrupt_timing=0;
 
 // the 'energy bucket' mimics the operation of a digital supply meter at the grid connection point.
 static volatile double divert_energyInBucket = 0;                                                 
@@ -155,8 +158,19 @@ static volatile double divert_energyInBucket = 0;
 static uint8_t page=0;
 static uint8_t counter=8;
 
+static int myAnalogRead(uint8_t pin) {
 
+uint8_t low, high; 
+ADMUX = (1 << 6) | (pin & 0x07); 
+delay(1);
+//sbi(ADCSRA, ADSC); 
+ADCSRA |= _BV(ADSC);
+while (bit_is_set(ADCSRA, ADSC));
+low = ADCL; 
+high = ADCH;
+return (high << 8) | low; 
 
+}
 
 
 static long readVcc() {
@@ -172,8 +186,12 @@ static long readVcc() {
 }
 
 
-static void takesinglereading() {
 
+static void takesinglereading() {
+//This function takes about 196 microseconds to run.
+
+  interrupt_timing=micros();
+  
   //Is it worth putting in the digital low pass filters here instead of high pass?
   //as per calypso_rae code?
 
@@ -188,14 +206,16 @@ static void takesinglereading() {
   //As we are using an OpAmp the current reading is inverted - swap back.
   //sampleI = 0x03FF-analogRead(currentSensorPin);
 
-  sampleI = analogRead(currentSensorPin);
-  sampleV = analogRead(voltageSensorPin);
+  //sampleI = AnalogRead(currentSensorPin);
+  //sampleV = AnalogRead(voltageSensorPin);
+  sampleI = myAnalogRead(3);
+  sampleV = myAnalogRead(2);
 
   //-----------------------------------------------------------------------------
   // B) Apply digital high pass filters to remove 2.5V DC offset (centered on 0V).
   //-----------------------------------------------------------------------------
-  filteredV = 0.996*(lastFilteredV+sampleV-lastSampleV);
-  filteredI = 0.996*(lastFilteredI+sampleI-lastSampleI);
+  filteredV = 0.996*(lastFilteredV+(sampleV-lastSampleV));
+  filteredI = 0.996*(lastFilteredI+(sampleI-lastSampleI));
 
   //-----------------------------------------------------------------------------
   // C) Root-mean-square method voltage
@@ -220,6 +240,8 @@ static void takesinglereading() {
 
   samplesDuringThisMainsCycle++;  // for power calculation of a single AC wave
   numberOfSamples++;  // for power calculation over a number of AC wave samples
+
+  interrupt_timing=micros()-interrupt_timing;
 }
 
 
@@ -230,6 +252,10 @@ static void positivezerocrossing()
   //To keep the timing constant as possible try to avoid putting anything in large if...then clauses
   //so that the path through the code is a similar as possible...
   Timer1.detachInterrupt();
+
+  //digitalWriteFast(GAINSTAGEPIN1,LOW);
+  //digitalWriteFast(GAINSTAGEPIN2,LOW);
+  //digitalWriteFast(GAINSTAGEPIN3,LOW);
 
   //Start of the solar power divert code...
   waveformSampledCount++;
@@ -303,13 +329,18 @@ static void positivezerocrossing()
     //cumVdeltasThisCycle = 0;
   }
 
-  previousSamplesDuringThisMainsCycle=samplesDuringThisMainsCycle;
+  //previousSamplesDuringThisMainsCycle=samplesDuringThisMainsCycle;
   samplesDuringThisMainsCycle = 0;
 
   //Get the first reading near the zero cross...
   takesinglereading();
 
   voltageAtZeroCross=sampleV;
+
+
+  //digitalWriteFast(GAINSTAGEPIN1,HIGH);
+  //digitalWriteFast(GAINSTAGEPIN2,HIGH);
+  //digitalWriteFast(GAINSTAGEPIN3,HIGH);
 
   // attaches callback() as a timer overflow interrupt, called every X microseconds
   Timer1.attachInterrupt(takesinglereading,INTERRUPTDELAY );  
@@ -334,9 +365,13 @@ void setup()
   Serial.begin(115200);  //Faster baud rate to reduce timing of serial.print commands
 #endif
 
-  //Use PWM to control the LCD contrast
-  pinModeFast(CONTRAST_PIN, OUTPUT);
-  analogWrite(CONTRAST_PIN, CONTRAST);
+  pinModeFast(GAINSTAGEPIN1, OUTPUT);
+  pinModeFast(GAINSTAGEPIN2, OUTPUT);
+  pinModeFast(GAINSTAGEPIN3, OUTPUT);
+  
+  digitalWriteFast(GAINSTAGEPIN1,HIGH);
+  digitalWriteFast(GAINSTAGEPIN2,HIGH);
+  digitalWriteFast(GAINSTAGEPIN3,HIGH);
 
   pinModeFast(outputPinForTrigger, OUTPUT);  
   //pinModeFast(outputPinForLed, OUTPUT);  
@@ -344,7 +379,6 @@ void setup()
   analogReference(DEFAULT);  //5v
 
   lcd.createChar (0, charzero);    // load character to the LCD
-
 
 #ifdef RFM12B
   rf12_initialize(nodeID, freq, networkGroup);                          // initialize RF
@@ -452,18 +486,15 @@ void loop()
       lcd.print(divert_energyInBucket,1);
     }
 
-    counter--;
-    if (counter==0) {
-      lcd.clear ();
-      page++; 
-      counter=8;
-    }
-    if (page>1) page=0;
 
 #ifdef enable_serial_debug
 
     Serial.print(" cyc# ");
     Serial.print(waveformSampledCount);
+
+     //This is a timing of the interrupt routine in microseconds
+     Serial.print(",iT ");
+     Serial.print(interrupt_timing);
 
     Serial.print(", Vzero ");
     Serial.print(voltageAtZeroCross);
@@ -528,9 +559,6 @@ void loop()
      Serial.print(" E=");
      Serial.print(energyInBucket);
      
-     //This is a timing of the interrupt routine in microseconds
-     Serial.print("  int time=");
-     Serial.print(interrupt_timing);
      
      Serial.println();
      */
@@ -553,6 +581,15 @@ void loop()
 #endif
 
     delay(1000);
+
+    counter--;
+    if (counter==0) {
+      lcd.clear ();
+      page++; 
+      counter=8;
+    }
+    if (page>1) page=0;
+
   }
   else {
     //Whilst we are warming up the sample buffers and filters
